@@ -52,4 +52,21 @@ public sealed class GameRoomsHttpClientTests
 
         Assert.Equal(GameRoomsErrorCode.RoomNotFound, ex.ErrorCode);
     }
+
+    [Fact]
+    public async Task GetRoomByCodeAsync_MapsStatusOnlyNotFoundError()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("oops", Encoding.UTF8, "text/plain")
+            });
+
+        using var httpClient = new HttpClient(handler);
+        var client = new GameRoomsHttpClient(httpClient, new GameRoomsClientOptions { HttpBaseUri = new Uri("https://api.example.com") });
+
+        var ex = await Assert.ThrowsAsync<GameRoomsApiException>(() => client.GetRoomByCodeAsync("XXXX"));
+
+        Assert.Equal(GameRoomsErrorCode.RoomNotFound, ex.ErrorCode);
+    }
 }

@@ -48,7 +48,7 @@ public sealed class GameRoomsHttpClient
         }
 
         var path = _options.RoomLookupPathTemplate.Replace("{code}", Uri.EscapeDataString(roomCode.Trim()), StringComparison.Ordinal);
-        return SendAsync<RoomLookupResponse>(HttpMethod.Get, path, body: null, cancellationToken);
+        return SendAsync<RoomLookupResponse>(HttpMethod.Get, path, body: null, cancellationToken, notFoundErrorCode: GameRoomsErrorCode.RoomNotFound);
     }
 
     public Task<AppConfigResponse> GetAppConfigAsync(string appId, CancellationToken cancellationToken = default)
@@ -62,7 +62,7 @@ public sealed class GameRoomsHttpClient
         return SendAsync<AppConfigResponse>(HttpMethod.Get, path, body: null, cancellationToken);
     }
 
-    private async Task<T> SendAsync<T>(HttpMethod method, string relativePath, object? body, CancellationToken cancellationToken)
+    private async Task<T> SendAsync<T>(HttpMethod method, string relativePath, object? body, CancellationToken cancellationToken, GameRoomsErrorCode? notFoundErrorCode = null)
     {
         var requestUri = new Uri(_options.HttpBaseUri, relativePath);
         using var request = new HttpRequestMessage(method, requestUri);
@@ -78,7 +78,7 @@ public sealed class GameRoomsHttpClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await CreateExceptionAsync(response.StatusCode, contentStream, cancellationToken).ConfigureAwait(false);
+            throw await CreateExceptionAsync(response.StatusCode, contentStream, cancellationToken, notFoundErrorCode).ConfigureAwait(false);
         }
 
         var payload = await JsonSerializer.DeserializeAsync<T>(contentStream, JsonOptions, cancellationToken).ConfigureAwait(false);
@@ -90,7 +90,7 @@ public sealed class GameRoomsHttpClient
         return payload;
     }
 
-    private static async Task<GameRoomsApiException> CreateExceptionAsync(HttpStatusCode statusCode, System.IO.Stream contentStream, CancellationToken cancellationToken)
+    private static async Task<GameRoomsApiException> CreateExceptionAsync(HttpStatusCode statusCode, System.IO.Stream contentStream, CancellationToken cancellationToken, GameRoomsErrorCode? notFoundErrorCode)
     {
         ApiErrorResponse? errorPayload = null;
 
@@ -103,12 +103,12 @@ public sealed class GameRoomsHttpClient
             // Fall through to status-code-only classification.
         }
 
-        var errorCode = ClassifyError(statusCode, errorPayload?.Error);
+        var errorCode = ClassifyError(statusCode, errorPayload?.Error, notFoundErrorCode);
         var message = errorPayload?.Message ?? errorPayload?.Error ?? $"Game Rooms API call failed with HTTP {(int)statusCode}.";
         return new GameRoomsApiException(statusCode, errorCode, message);
     }
 
-    private static GameRoomsErrorCode ClassifyError(HttpStatusCode statusCode, string? error)
+    private static GameRoomsErrorCode ClassifyError(HttpStatusCode statusCode, string? error, GameRoomsErrorCode? notFoundErrorCode)
     {
         if (!string.IsNullOrWhiteSpace(error))
         {
@@ -125,7 +125,7 @@ public sealed class GameRoomsHttpClient
 
         return statusCode switch
         {
-            HttpStatusCode.NotFound => GameRoomsErrorCode.RoomNotFound,
+            HttpStatusCode.NotFound when notFoundErrorCode.HasValue => notFoundErrorCode.Value,
             HttpStatusCode.Locked => GameRoomsErrorCode.RoomLocked,
             HttpStatusCode.Conflict => GameRoomsErrorCode.RoomFull,
             HttpStatusCode.Unauthorized => GameRoomsErrorCode.Unauthorized,

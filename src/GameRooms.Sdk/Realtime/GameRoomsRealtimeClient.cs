@@ -16,10 +16,12 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
     private readonly Func<IGameRoomsSocketTransport> _transportFactory;
     private readonly ConcurrentDictionary<long, TaskCompletionSource<RealtimeServerEnvelope>> _pending = new();
     private readonly CancellationTokenSource _readerCts = new();
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private IGameRoomsSocketTransport? _transport;
     private Task? _readerLoop;
     private long _seq;
+    private int _disposeState;
 
     public GameRoomsRealtimeClient()
         : this(() => new ClientWebSocketTransport())
@@ -32,17 +34,40 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
     }
 
     public event EventHandler<RealtimeEventMessage>? EventReceived;
+    public event EventHandler<Exception>? EventDispatchError;
 
     public async Task ConnectAsync(Uri websocketUri, CancellationToken cancellationToken = default)
     {
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
         if (websocketUri is null)
         {
             throw new ArgumentNullException(nameof(websocketUri));
         }
+        if (_transport is not null)
+        {
+            throw new InvalidOperationException("Client is already connected.");
+        }
 
-        _transport = _transportFactory();
-        await _transport.ConnectAsync(websocketUri, cancellationToken).ConfigureAwait(false);
+        var transport = _transportFactory();
+        try
+        {
+            await transport.ConnectAsync(websocketUri, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
+        _transport = transport;
         _readerLoop = Task.Run(() => ReaderLoopAsync(_readerCts.Token), CancellationToken.None);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
     public Task<T?> SendCommandAsync<T>(string opcode, object? parameters = null, CancellationToken cancellationToken = default)
@@ -94,10 +119,13 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
 
     private async Task<T?> SendCommandInternalAsync<T>(string opcode, object? parameters, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (_transport is null)
         {
             throw new InvalidOperationException("Client is not connected.");
         }
+        var transport = _transport;
 
         if (string.IsNullOrWhiteSpace(opcode))
         {
@@ -118,7 +146,7 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
             };
 
             var json = JsonSerializer.Serialize(envelope, JsonOptions);
-            await _transport.SendTextAsync(json, cancellationToken).ConfigureAwait(false);
+            await transport.SendTextAsync(json, cancellationToken).ConfigureAwait(false);
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _readerCts.Token);
             using var registration = linkedCts.Token.Register(() => tcs.TrySetCanceled(linkedCts.Token));
@@ -148,6 +176,7 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
         {
             return;
         }
+        Exception? shutdownException = null;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -168,6 +197,7 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
 
             if (string.IsNullOrWhiteSpace(json))
             {
+                shutdownException = new InvalidOperationException("Realtime connection closed by server.");
                 break;
             }
 
@@ -194,15 +224,36 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
 
             if (!string.IsNullOrWhiteSpace(message.Opcode))
             {
-                EventReceived?.Invoke(this, new RealtimeEventMessage
+                try
                 {
-                    Opcode = message.Opcode,
-                    Payload = message.Result
-                });
+                    EventReceived?.Invoke(this, new RealtimeEventMessage
+                    {
+                        Opcode = message.Opcode,
+                        Payload = message.Result
+                    });
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        EventDispatchError?.Invoke(this, ex);
+                    }
+                    catch
+                    {
+                        // Ignore observer exceptions.
+                    }
+                }
             }
         }
 
-        FailPending(new OperationCanceledException("Realtime connection closed."));
+        if (shutdownException is null)
+        {
+            shutdownException = cancellationToken.IsCancellationRequested
+                ? new OperationCanceledException("Realtime connection closed.")
+                : new InvalidOperationException("Realtime connection closed.");
+        }
+
+        FailPending(shutdownException);
     }
 
     private void FailPending(Exception exception)
@@ -217,25 +268,40 @@ public sealed class GameRoomsRealtimeClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _readerCts.Cancel();
-
-        if (_transport is not null)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 1)
         {
-            await _transport.DisposeAsync().ConfigureAwait(false);
+            return;
         }
 
-        if (_readerLoop is not null)
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
         {
-            try
-            {
-                await _readerLoop.ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ignore shutdown errors.
-            }
-        }
+            _readerCts.Cancel();
 
-        _readerCts.Dispose();
+            if (_transport is not null)
+            {
+                await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+                await _transport.DisposeAsync().ConfigureAwait(false);
+                _transport = null;
+            }
+
+            if (_readerLoop is not null)
+            {
+                try
+                {
+                    await _readerLoop.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore shutdown errors.
+                }
+            }
+
+            _readerCts.Dispose();
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 }

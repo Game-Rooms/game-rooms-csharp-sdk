@@ -1,11 +1,12 @@
 using System;
 using System.Net.Http;
+using System.Threading.Tasks;
 using GameRooms.Sdk.Http;
 using GameRooms.Sdk.Realtime;
 
 namespace GameRooms.Sdk;
 
-public sealed class GameRoomsSdkClient
+public sealed class GameRoomsSdkClient : IAsyncDisposable
 {
     public GameRoomsSdkClient(HttpClient httpClient, GameRoomsClientOptions options)
     {
@@ -25,5 +26,10 @@ public sealed class GameRoomsSdkClient
         }
 
         throw new InvalidOperationException("Use absolute websocket URI from room create/lookup responses.");
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return Realtime.DisposeAsync();
     }
 }

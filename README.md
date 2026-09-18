@@ -36,7 +36,7 @@ var options = new GameRoomsClientOptions
 };
 
 using var http = new HttpClient();
-var sdk = new GameRoomsSdkClient(http, options);
+await using var sdk = new GameRoomsSdkClient(http, options);
 
 var room = await sdk.Http.CreateRoomAsync(new CreateRoomRequest
 {
