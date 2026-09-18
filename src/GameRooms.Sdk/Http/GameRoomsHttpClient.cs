@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -9,16 +10,35 @@ using GameRooms.Sdk.Models;
 
 namespace GameRooms.Sdk.Http;
 
+/// <summary>
+/// Provides HTTP operations for the Game Rooms API surface.
+/// </summary>
 public sealed class GameRoomsHttpClient
 {
+    /// <summary>
+    /// Gets shared serializer settings used by this client.
+    /// </summary>
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
 
+    /// <summary>
+    /// Gets the underlying HTTP client.
+    /// </summary>
     private readonly HttpClient _httpClient;
+
+    /// <summary>
+    /// Gets the SDK endpoint options.
+    /// </summary>
     private readonly GameRoomsClientOptions _options;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GameRoomsHttpClient"/> class.
+    /// </summary>
+    /// <param name="httpClient">The HTTP client used to send requests.</param>
+    /// <param name="options">The endpoint configuration options.</param>
+    /// <exception cref="ArgumentException">Thrown when required options are missing.</exception>
     public GameRoomsHttpClient(HttpClient httpClient, GameRoomsClientOptions options)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
@@ -30,6 +50,12 @@ public sealed class GameRoomsHttpClient
         }
     }
 
+    /// <summary>
+    /// Creates a new room.
+    /// </summary>
+    /// <param name="request">The room creation request payload.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The created room response.</returns>
     public Task<CreateRoomResponse> CreateRoomAsync(CreateRoomRequest request, CancellationToken cancellationToken = default)
     {
         if (request is null)
@@ -40,6 +66,12 @@ public sealed class GameRoomsHttpClient
         return SendAsync<CreateRoomResponse>(HttpMethod.Post, _options.CreateRoomPath, request, cancellationToken);
     }
 
+    /// <summary>
+    /// Looks up a room by short code.
+    /// </summary>
+    /// <param name="roomCode">The short room code.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The room lookup response.</returns>
     public Task<RoomLookupResponse> GetRoomByCodeAsync(string roomCode, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(roomCode))
@@ -51,6 +83,12 @@ public sealed class GameRoomsHttpClient
         return SendAsync<RoomLookupResponse>(HttpMethod.Get, path, body: null, cancellationToken, notFoundErrorCode: GameRoomsErrorCode.RoomNotFound);
     }
 
+    /// <summary>
+    /// Retrieves configuration for a game application.
+    /// </summary>
+    /// <param name="appId">The application identifier.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The application configuration response.</returns>
     public Task<AppConfigResponse> GetAppConfigAsync(string appId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(appId))
@@ -62,6 +100,16 @@ public sealed class GameRoomsHttpClient
         return SendAsync<AppConfigResponse>(HttpMethod.Get, path, body: null, cancellationToken);
     }
 
+    /// <summary>
+    /// Sends an HTTP request and deserializes a successful JSON payload.
+    /// </summary>
+    /// <typeparam name="T">The expected response type.</typeparam>
+    /// <param name="method">The HTTP method.</param>
+    /// <param name="relativePath">The relative API path.</param>
+    /// <param name="body">The optional request body.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <param name="notFoundErrorCode">The optional error code to map HTTP 404 responses.</param>
+    /// <returns>The deserialized response payload.</returns>
     private async Task<T> SendAsync<T>(HttpMethod method, string relativePath, object? body, CancellationToken cancellationToken, GameRoomsErrorCode? notFoundErrorCode = null)
     {
         var requestUri = new Uri(_options.HttpBaseUri, relativePath);
@@ -90,7 +138,15 @@ public sealed class GameRoomsHttpClient
         return payload;
     }
 
-    private static async Task<GameRoomsApiException> CreateExceptionAsync(HttpStatusCode statusCode, System.IO.Stream contentStream, CancellationToken cancellationToken, GameRoomsErrorCode? notFoundErrorCode)
+    /// <summary>
+    /// Creates a typed API exception from an HTTP error response.
+    /// </summary>
+    /// <param name="statusCode">The HTTP status code.</param>
+    /// <param name="contentStream">The response body stream.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <param name="notFoundErrorCode">The optional error code to map HTTP 404 responses.</param>
+    /// <returns>A classified API exception instance.</returns>
+    private static async Task<GameRoomsApiException> CreateExceptionAsync(HttpStatusCode statusCode, Stream contentStream, CancellationToken cancellationToken, GameRoomsErrorCode? notFoundErrorCode)
     {
         ApiErrorResponse? errorPayload = null;
 
@@ -108,6 +164,13 @@ public sealed class GameRoomsHttpClient
         return new GameRoomsApiException(statusCode, errorCode, message);
     }
 
+    /// <summary>
+    /// Maps HTTP and protocol-level errors to SDK error codes.
+    /// </summary>
+    /// <param name="statusCode">The HTTP status code.</param>
+    /// <param name="error">The optional protocol error code.</param>
+    /// <param name="notFoundErrorCode">The optional error code to map HTTP 404 responses.</param>
+    /// <returns>The SDK error classification.</returns>
     private static GameRoomsErrorCode ClassifyError(HttpStatusCode statusCode, string? error, GameRoomsErrorCode? notFoundErrorCode)
     {
         if (!string.IsNullOrWhiteSpace(error))
