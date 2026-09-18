@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GameRooms.Sdk/GameRooms.Sdk.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GameRooms.Sdk.Tests/GameRooms.Sdk.Tests.csproj" />
+  </Folder>
+</Solution>
